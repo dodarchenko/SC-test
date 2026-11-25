@@ -1,0 +1,72 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: Which tests to run
+        type: choice
+        default: all
+        options:
+          - all # UI (Chromium, Firefox) and API
+          - ui # all UI tests
+          - api # all API tests
+          - e2e # UI tests tagged @e2e
+          - auth # UI tests tagged @auth
+          - inventory # UI tests tagged @inventory
+
+permissions:
+  contents: read
+
+# A newer run for the same branch and scope replaces one still in progress.
+concurrency:
+  group: tests-${{ github.ref }}-${{ inputs.scope || 'all' }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Tests (${{ inputs.scope || 'all' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Push and pull_request runs have no inputs, so they run everything.
+      SCOPE: ${{ inputs.scope || 'all' }}
+      # URLs: repository variables. Credentials: repository secrets. See README › CI.
+      BASE_URL: ${{ vars.BASE_URL }}
+      API_BASE_URL: ${{ vars.API_BASE_URL }}
+      SAUCE_PASSWORD: ${{ secrets.SAUCE_PASSWORD }}
+      API_USERNAME: ${{ secrets.API_USERNAME }}
+      API_PASSWORD: ${{ secrets.API_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+
+      # Fails fast, before browsers are installed or any test runs.
+      - name: Typecheck, lint, format
+        run: npm run check
+
+      - name: Install browsers
+        if: env.SCOPE != 'api'
+        run: npx playwright install --with-deps chromium firefox
+
+      # Each scope is an npm script (package.json), so CI and local runs use the same commands.
+      # A missing URL or credential stops the run with a message naming it (src/shared/env.ts).
+      - name: Run tests
+        run: npm run test:${{ env.SCOPE }}
+
+      - name: Upload report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ env.SCOPE }}
+          path: playwright-report/
+          retention-days: 14
+          # No report when the run stopped at the checks step.
+          if-no-files-found: ignore
