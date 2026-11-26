@@ -1,6 +1,21 @@
 # saucedemo & dummyjson Playwright tests
 
-Written with [Playwright](https://playwright.dev) and TypeScript:
+> **A quick note on my approach** 👋
+>
+> Though, saucedemo and dummyjson are two separate systems. But I've imagined them as **one product**: saucedemo is the web shop, and dummyjson plays the backend it doesn't really have. That's why both parts of the assignment live in **one framework**, which is how I'd want it in a real development process: one repo, one stack, one CI pipeline, one place to look when something breaks.
+>
+> So the API tests are written in **TypeScript with Playwright** too, not in a separate tool. Postman would probably have been the easier pick for API tests, and it's great for exploring an API by hand, but for a test suite that grows with the product I think code wins.
+>
+> Why I like this setup:
+>
+> - **UI and API tests can work together.** Since they share one runner and one set of fixtures, a test can mix both: prepare data through the API and check it in the UI, or do something in the UI and verify it at the API level. That's where the deeper, more realistic end-to-end scenarios come from.
+> - **Everything is reused, nothing is copied.** Users, expected texts and error messages, the money helpers and the shared fixtures serve both UI and API tests. Change a value once and every test picks it up.
+> - **Stronger checks.** Responses are validated with typed schemas, money is compared in cents, cart totals are recalculated, and products are matched against the live catalog. That's the kind of logic that stays readable in code but gets messy in per-request scripts.
+> - **Proper engineering tooling.** Type checks, linting, formatting and code review work the same for every test, and a renamed field shows up as a compile error, not as a surprise in CI.
+> - **One place for results.** A single HTML report with steps and traces for both kinds of tests, a single CI workflow, and one command to run any part of it.
+> - **Independent tests.** Each test sets up what it needs through fixtures, so any test can run on its own, in parallel or on retry, without depending on the tests before it.
+
+I've used Claude Opus 5.5 to generate API schemas and catalog, models, i18n, utils, gather locators and generate Page Objects.
 
 - **UI tests** for saucedemo, in Chromium and Firefox (`tests/ui`)
 - **API tests** for the dummyjson REST API, no browser (`tests/api`, see [API tests](#api-tests))
@@ -53,48 +68,59 @@ URLs of the systems under test and test account credentials are **not stored in 
 ## Project layout
 
 ```
-src/
-  api/          API tests: clients, zod response schemas, catalog, fixtures ('@api/fixtures')
-  pages/        page objects; BasePage → ShopPage (pages after sign in) → each page
-  components/   parts shared by pages: Header, ProductList, ProductCard
-  fixtures/     UI fixtures, chained shared base → auth → cart → checkout; import from '@fixtures'
-  models/       Product type, money parsing and formatting
-  utils/        browser state (BrowserState: session cookie, stored cart), cart assertions, reporting
-  shared/       base fixture shared by UI and API tests (messages)
-test-data/      users, customers, sign-in cases and other test inputs
-  i18n/         expected texts per locale (en.ts): site texts and API error messages
-  carts.ts      shape of the carts the API tests create
-tests/
-  ui/           saucedemo specs, grouped by area (auth, inventory, e2e)
-  api/          dummyjson specs, one file per endpoint group (auth, products, carts)
+tests/          the tests themselves
+  ui/           saucedemo (website) tests: auth, inventory, e2e
+  api/          dummyjson (API) tests: auth, products, carts
+src/            the building blocks the tests use
+  pages/        one class per website page
+  components/   parts that appear on several pages
+  fixtures/     ready-made helpers for UI tests
+  api/          everything for talking to the API
+  shared/       things UI and API tests both use
+  models/       small data types and money helpers
+  utils/        checks and tools used by UI tests
+test-data/      the inputs and expected results
 ```
 
-Path aliases (`@fixtures`, `@api/*`, `@shared/*`, `@pages/*`, `@components/*`, `@models/*`, `@utils/*`, `@data/*`) are set in `tsconfig.json`.
+**`tests/`: the tests.** Each file reads like a scenario: sign in, add products, check the cart, and so on. They contain the steps and checks, but no low-level details like selectors or URLs.
 
-### Fixtures
+- `ui/auth/sign-in.spec.ts`: wrong or missing credentials are rejected, both on screen and in the browser's storage.
+- `ui/e2e/checkout.spec.ts`: every user buys two products from start to finish.
+- `ui/inventory/sorting.spec.ts`: products sort Z to A, and bad product titles get flagged.
+- `api/*.spec.ts`: login, product details, creating and deleting carts, plus two error cases.
 
-| Fixture                                  | What it does                                                                           |
-| ---------------------------------------- | -------------------------------------------------------------------------------------- |
-| `signInViaUI(user)`                      | signs in through the login form                                                        |
-| `signInViaState(user, { cartItemIds? })` | signs in by setting the session cookie (and cart) directly, no form                    |
-| `addRandomProductToCart()`               | adds a random product from the inventory; returns its id, title and price              |
-| `verifyCart(products)`                   | checks the cart page and `cart-contents` against the given products                    |
-| `verifyCheckoutOverview(products)`       | checks checkout step two: products, prices, item total, tax, total and `cart-contents` |
-| `expectEmptyCart(page)`                  | checks there is no cart badge and `cart-contents` is empty                             |
+**`src/pages/`: page objects.** One class per page of the shop (login, inventory, cart, the three checkout steps). Each knows where its buttons and fields are and how to tell the page has loaded, so tests say `cartPage.checkoutButton.click()` instead of repeating selectors. They all build on `base.page.ts`, which handles opening a page and waiting for it.
 
-The `verify…` fixtures check the page the browser is already on and fail if it doesn't load; they never navigate, so a broken link or button can't go unnoticed.
+**`src/components/`: shared page parts.** The header with the cart badge, and the product list and product card that look the same on the inventory, cart and checkout pages. Written once and used by every page that shows them.
 
-Page objects are also available as fixtures (`loginPage`, `inventoryPage`, `cartPage`, …), as is `session` (a `BrowserState`) for reading and writing the session cookie and stored cart.
+**`src/fixtures/`: helpers for UI tests.** Playwright hands these to a test when it asks for them: page objects, plus bigger actions like `signInViaUI`, `signInViaState`, `addRandomProductToCart`, and checks like `verifyCart` and `verifyCheckoutOverview`.
+
+**`src/api/`: talking to the API.**
+
+- `clients.ts`: one small class per group of endpoints (auth, products, carts). Each method sends one request, and the report shows it as a step named after it, like `GET /products/42`.
+- `schemas/`: what each response must look like (fields, types, allowed ranges), written with zod.
+- `response.ts`: `expectResponse` and `expectError` check the status and validate the body in one line.
+- `catalog.ts`: loads the live product list, so tests pick real products instead of hardcoded ids.
+- `fixtures.ts`: hands the clients, the catalog and a logged-in user to API tests.
+
+**`src/shared/`: used by both UI and API tests.** `env.ts` reads settings like URLs and passwords from the environment (`.env` locally, secrets in CI), and `base.fixture.ts` provides the expected texts (`messages`) to every test.
+
+**`src/models/`: simple data types.** What a product looks like, and helpers for money: reading `$29.99` from the page, and comparing amounts in cents so rounding never causes false failures.
+
+**`src/utils/`: tools for UI tests.** Reading and writing the browser state the site keeps (`browser-state.ts`), the shared cart checks (`cart-assertions.ts`), the product-title rules (`product-title.ts`), and `report.ts`, which adds notes and attachments to the test report.
+
+**`test-data/`: inputs and expected results.** Kept apart from the tests, so changing data never means touching test code.
+
+- `users.ts`: the test accounts and which ones have known defects (passwords come from the environment).
+- `sign-in.ts`: the failed sign-in cases, built from the user list.
+- `checkout.ts`, `inventory.ts`, `carts.ts`: customer details, sort options, cart sizes.
+- `i18n/`: every text the tests expect, from the site and from the API, per language.
+
+**In the root:** `playwright.config.ts` (projects, browsers, URLs), `.env.example` (the settings you need to fill in), `.github/workflows/tests.yml` (CI), plus lint, format and TypeScript settings.
 
 ### Site texts and locales
 
 Every text the tests expect from the site (errors, page titles, button and sort labels) lives in [`test-data/i18n/`](test-data/i18n), never in specs or page objects. Tests read them through the `messages` fixture, which picks the dictionary for the test's `locale`:
-
-```ts
-test('…', async ({ messages, loginPage }) => {
-  await expect(loginPage.errorMessage).toHaveText(messages.login.errors.lockedOut);
-});
-```
 
 - `en.ts` is the source locale and defines the keys. A new locale (e.g. `nl.ts`) is typed as `Messages`, so a missing key is a compile error; register it in `i18n/index.ts`.
 - `en-US` falls back to `en`; a regional file such as `en-GB` is used when registered.
@@ -115,18 +141,7 @@ test('…', async ({ messages, loginPage }) => {
 | `auth`      | UI tests tagged `@auth` (failed sign in)   |
 | `inventory` | UI tests tagged `@inventory` (sorting)     |
 
-Or from the command line: `gh workflow run tests.yml -f scope=api`.
-
 The workflow is a single job: it runs `npm run check` (typecheck, lint, format) first and stops there if that fails, then the selected tests, and uploads the HTML report as an artifact (`playwright-report-<scope>`, kept 14 days). Failures also appear as annotations on the run and the pull request.
-
-**One-time setup** (Settings › Secrets and variables › Actions):
-
-- **Variables**: `BASE_URL`, `API_BASE_URL`, the hosted instances to test (on a CI runner the localhost defaults don't apply)
-- **Secrets**: `SAUCE_PASSWORD`, `API_USERNAME`, `API_PASSWORD`
-
-If a URL or credential is missing, the run stops with a message naming it. Each scope is the npm script of the same name (`npm run test:<scope>`), so CI and local runs use the same commands.
-
-The scopes that include the saucedemo UI (`all`, `ui`, `auth`, `inventory`) currently end red, because of the two real defects listed under [Known site defects](#known-site-defects). That's intended: they stay visible until fixed.
 
 ## Known site defects
 

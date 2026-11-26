@@ -40,6 +40,7 @@ export default tseslint.config(
       'playwright/no-conditional-in-test': 'off',
     },
   },
-  { files: ['eslint.config.mjs'], ...tseslint.configs.disableTypeChecked },
+  // Plain JavaScript files are outside the TypeScript project, so type-aware rules don't apply.
+  { files: ['**/*.mjs'], ...tseslint.configs.disableTypeChecked },
   prettier,
 );
